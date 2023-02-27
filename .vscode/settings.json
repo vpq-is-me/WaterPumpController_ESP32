@@ -1,0 +1,20 @@
+{
+    "idf.adapterTargetName": "esp32",
+    "idf.openOcdConfigs": [
+        "interface/ftdi/esp32_devkitj_v1.cfg",
+        "target/esp32.cfg"
+    ],
+    "cmake.configureOnOpen": true,
+    "files.associations": {
+        "esp_log.h": "c",
+        "freertos.h": "c",
+        "board.h": "c",
+        "ads1115.h": "c",
+        "display_adc.h": "c",
+        "loop.h": "c",
+        "nvs.h": "c",
+        "esp_partition.h": "c"
+    },
+    "idf.portWin": "COM9",
+    "idf.flashType": "UART"
+}

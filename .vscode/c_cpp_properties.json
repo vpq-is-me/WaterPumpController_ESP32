@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "ESP-IDF",
+            "compilerPath": "c:\\esp\\espressif\\tools\\xtensa-esp32-elf\\esp-2021r2-patch3-8.4.0\\xtensa-esp32-elf\\bin\\xtensa-esp32-elf-gcc.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${config:idf.espIdfPath}/components/**",
+                "${config:idf.espIdfPathWin}/components/**",
+                "${config:idf.espAdfPath}/components/**",
+                "${config:idf.espAdfPathWin}/components/**",
+                "${config:idf.espIdfPath}/examples/bluetooth/esp_ble_mesh/common_components/button",
+                "${config:idf.espIdfPath}/examples/bluetooth/esp_ble_mesh/common_components/example_init",
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/managed_components/ADS1115"
+            ],
+            "browse": {
+                "path": [
+                    "${config:idf.espIdfPath}/components",
+                    "${config:idf.espIdfPathWin}/components",
+                    "${config:idf.espAdfPath}/components/**",
+                    "${config:idf.espAdfPathWin}/components/**",
+                    "${config:idf.espIdfPath}/examples/bluetooth/esp_ble_mesh/common_components/button",
+                    "${config:idf.espIdfPath}/examples/bluetooth/esp_ble_mesh/common_components/example_init",
+                    "${workspaceFolder}",
+                    "${workspaceFolder}/managed_components/ADS1115"
+                ],
+                "limitSymbolsToIncludedHeaders": false
+            },
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "configurationProvider": "ms-vscode.cmake-tools"
+        }
+    ],
+    "version": 4
+}

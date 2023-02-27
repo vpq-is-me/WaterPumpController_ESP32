@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+D:/Work/Esp32Projects/WaterPump/build/CMakeFiles/bootloader
+D:/Work/Esp32Projects/WaterPump/build/CMakeFiles/bootloader.rule
+D:/Work/Esp32Projects/WaterPump/build/CMakeFiles/bootloader-complete.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+D:/Work/Esp32Projects/WaterPump/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
