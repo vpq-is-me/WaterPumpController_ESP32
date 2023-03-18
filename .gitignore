@@ -1,0 +1,11 @@
+*.pdf
+*.old
+*.bin
+*.elf
+*.map
+*.bin_timestamp
+*.out
+*.obj
+*.a
+*.log
+logs/

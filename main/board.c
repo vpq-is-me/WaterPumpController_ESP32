@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "board.h"
 #include "loop.h"
+#include "display_adc.h"
 // #include "iot_button.h"
 
 
@@ -71,17 +72,31 @@ typedef struct{
     uint8_t pump_power_in_states; //shift register of state of pump power input 
     uint32_t pump_on_timer;//pump working time from pump start, for long run check,in timer granuality 
     uint32_t pump_off_timer;//pump not working time from last stop, for frequent restart check,in timer granuality
-    uint32_t pump_run_cnt;//accumulated counter of working time from last flow-counter pulse,in timer granuality
     uint8_t pump_run_fg;
+    TickType_t pump_on_acc;//accumulated timer of working time from last flow-counter pulse
+    TickType_t pump_last_start;//time of last start of pump
 }tDigIn_st;
 static tDigIn_st dig_ins={
     .counter_in_states=0xff,
     .pump_power_in_states=0xff,
+    .pump_on_acc=0,
 };
 //because it must be enough long time between flow-counter pulses 
-//it is not required to protectect 'pump_last_run_time_ms' by any interprocess sharing facilities 
+//it is not required to protectect 'pump_last_run_time_ms' and 'press_val_at_cnt_pulse' by any interprocess sharing facilities 
 //AND read/write 32bit value supposed to be atomic  
 volatile uint32_t pump_last_run_time_ms=0; //pump working time sinse last flow-counter pulse, used for share
+volatile int32_t press_val_at_cnt_pulse=0; //pressure value captured at flow-counter pulse
+static uint8_t relay_onoff_cmd=PP_REL_OFF;
+
+#define PP_MAXFLOW_PER_TICK (55.0/60.0/configTICK_RATE_HZ)
+#define PP_MAX_HEAD 5.0
+#define PP_MAXHEAD_AD Pressure2ADCcode(PP_MAX_HEAD)
+// MAXFLOW-MAXFLOW/MAXHEAD^2*pr^2  --->   55-(55/5^2)*PR^2
+#define PP_FlowPerTick(pr) (PP_MAXFLOW_PER_TICK-((PP_MAXFLOW_PER_TICK)/(float)(PP_MAXHEAD_AD*PP_MAXHEAD_AD))*pr*pr)
+volatile float flow_acc_last=0;
+volatile float flow_acc=0;
+volatile TickType_t flow_acc_last_time=0;
+int32_t pump_is_on=0;
 
 void DigInLoop(void* tmr) ;
 static void RelaySwitchFSM(void);
@@ -111,7 +126,6 @@ void DigInInit(EventGroupHandle_t events){
     xTimerStart(tmr,0);
     dig_ins.pump_off_timer=0xffffffff;
 }
-
 void DigInLoop(void* tmr) {
     RelaySwitchFSM();
     dig_ins.counter_in_states = (dig_ins.counter_in_states << 1) | gpio_get_level(COUNTER_IN_PIN);
@@ -119,15 +133,25 @@ void DigInLoop(void* tmr) {
     button_state = (button_state << 1) | gpio_get_level(BOARD_BUTTON_PIN);
     if((button_state&0x07)==0x04)button_was_pressed=1;
     if ((dig_ins.counter_in_states & 0x07) == 0x03) {  // rising front of next '10 liters' pulse
-        uint32_t t=dig_ins.pump_run_cnt*TIMER_GRANUL_MS;
-        pump_last_run_time_ms=t;
-        dig_ins.pump_run_cnt=0;
+        if(relay_onoff_cmd==PP_REL_ON){
+           dig_ins.pump_on_acc+=xTaskGetTickCount()-dig_ins.pump_last_start;
+        }
+        dig_ins.pump_last_start=xTaskGetTickCount();//even if it is in OFF noting wrong will happen
+        pump_last_run_time_ms=pdTICKS_TO_MS(dig_ins.pump_on_acc);
+        press_val_at_cnt_pulse=ADCGetResult();
+        dig_ins.pump_on_acc=0;
+
+
+        if(pump_is_on)flow_acc+=PP_FlowPerTick(ADCGetResult())*(xTaskGetTickCount()-flow_acc_last_time);
+        flow_acc_last=flow_acc;
+        flow_acc=0;
+        flow_acc_last_time=xTaskGetTickCount();
+
         xEventGroupSetBits(input_events, EVENT_NEW_COUNT);
     }
     uint8_t p_st=dig_ins.pump_power_in_states & 0x07;//take last 3 input states
     if(p_st==0x04){//pressure switch just connect power to pump
         dig_ins.pump_on_timer=2;//plus 2 ticks from starting antibounce protection
-        dig_ins.pump_run_cnt+=2;
         xEventGroupSetBits(input_events, EVENT_PUMP_START);
         if(dig_ins.pump_off_timer<(MIN_PUMP_STOPPED_TIME_MS/TIMER_GRANUL_MS)){//pump start too often!
             xEventGroupSetBits(input_events,EVENT_PUMP_TOO_FREQ);
@@ -135,7 +159,6 @@ void DigInLoop(void* tmr) {
         dig_ins.pump_run_fg=1;
     }else if(p_st==0x00){//pump continue working 
         dig_ins.pump_on_timer++;
-        dig_ins.pump_run_cnt++;
         if(dig_ins.pump_on_timer==(MAX_PUMP_RUN_TIME_MS/TIMER_GRANUL_MS)){//check if pump work too long without stopping
             xEventGroupSetBits(input_events, EVENT_PUMP_RUN_LONG);
         }
@@ -161,7 +184,6 @@ uint32_t IsPumpRun(void){
 //**********************************************************************************
 typedef enum {REL_OFF, REL_TRIAC_CLS_ON,REL_RELAY_CLS_ON,
               REL_ON,  REL_TRIAC_OPN_ON,REL_RELAY_OPN_OFF}pump_relay_state_en;
-static uint8_t relay_onoff_cmd=PP_REL_OFF;
 void PumpRelay(uint8_t onoff){
     relay_onoff_cmd=onoff;
 }
@@ -169,6 +191,8 @@ void PumpRelay(uint8_t onoff){
 static void RelaySwitchFSM(void){
     static pump_relay_state_en state = REL_OFF;
     static TickType_t tout;
+    if(pump_is_on)flow_acc+=PP_FlowPerTick(ADCGetResult())*(xTaskGetTickCount()-flow_acc_last_time);
+    flow_acc_last_time=xTaskGetTickCount();
     switch (state) {
         case REL_OFF:
             if (relay_onoff_cmd == PP_REL_OFF) {
@@ -180,6 +204,8 @@ static void RelaySwitchFSM(void){
             }
         case REL_TRIAC_CLS_ON:
             gpio_set_level(PUMP_TRIAC_OUT_PIN, 0);
+            pump_is_on=1;
+            dig_ins.pump_last_start=xTaskGetTickCount();
             if ((xTaskGetTickCount()-tout)>RELAYSWITCHMARGINE){
                 state = REL_RELAY_CLS_ON;
                 tout = xTaskGetTickCount();
@@ -212,6 +238,8 @@ static void RelaySwitchFSM(void){
             if ((xTaskGetTickCount()-tout)>RELAYSWITCHMARGINE){
                 state = REL_OFF;
                 gpio_set_level(PUMP_TRIAC_OUT_PIN, 1);
+                pump_is_on=0;
+                dig_ins.pump_on_acc+=xTaskGetTickCount()-dig_ins.pump_last_start;
             }
             break;
         default:

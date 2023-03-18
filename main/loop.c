@@ -130,18 +130,18 @@ void loop_task(void* arg) {
             pump_data.acc_counter += LITRES_PER_PULSE;
             pump_data.pump_on_arr[idx]=pump_last_run_time_ms;
             // calculate capacity here
-            CalcPumpCapacity(last_press_val);
-            CalcWaterTkNetVolume(last_press_val);
+            CalcPumpCapacity(press_val_at_cnt_pulse);
+            CalcWaterTkNetVolume(press_val_at_cnt_pulse);
 int kkk=idx;
 int ttt=0;
 for(int j=0;j<PP_CAPACITY_AVRG_NUM;j++)ttt+=pump_data.pump_on_arr[j];
 if (++ kkk >= PP_CAPACITY_AVRG_NUM) kkk = 0;
 ESP_LOGI("PULSE","%d,%.3f,%.3f,%.3f,%d,%d,",pump_data.acc_counter,pump_data.pump_capacity,pump_data.pump_capacity_avg,pump_data.tank_volume,pump_data.pump_on_arr[idx],ttt);
-ESP_LOGI("PULSE","%d,%d,%d,%d,%d\r\n\r\n",pump_data.pres_bgn_arr[kkk],last_press_val,(int)pump_data.pump_on_arr_idx,pump_data.pres_max,pump_data.pres_min);
+ESP_LOGI("PULSE","%d,%d,%d,%d,%d,%.3f\r\n\r\n",pump_data.pres_bgn_arr[kkk],press_val_at_cnt_pulse,(int)pump_data.pump_on_arr_idx,pump_data.pres_max,pump_data.pres_min,flow_acc_last);
             //prepare next cycle
             if (++ idx >= PP_CAPACITY_AVRG_NUM) idx = 0;
             pump_data.pump_on_arr_idx=idx;
-            pump_data.pres_bgn_arr[idx]=last_press_val;
+            pump_data.pres_bgn_arr[idx]=press_val_at_cnt_pulse;
             DisplaySetCounter(pump_data.acc_counter);
             StoreVal("counter",(*(int32_t*)&pump_data.acc_counter));
         }
@@ -186,21 +186,22 @@ ESP_LOGI("PULSE","%d,%d,%d,%d,%d\r\n\r\n",pump_data.pres_bgn_arr[kkk],last_press
 static void CalcPumpCapacity(int32_t curr_pres){
     uint32_t idx;
     uint32_t working_time=0;
-    int32_t pres_bgn=0;
+    int32_t pres_bgn_abs;
+    int32_t curr_pres_abs=curr_pres+ADC_1BAR;
     idx=pump_data.pump_on_arr_idx;
     if(pump_data.pres_bgn_arr[idx]==0)return;//this is first entrence, there is no enough data
     float water_in_tk;//difference of water, stored in tank at this moment and at the begining of averaging period
     //calculate capacitance for last 'LITRES_PER_PULSE' liters (for last pulse)
     working_time=pump_data.pump_on_arr[idx];
-    int p_dif=curr_pres-pump_data.pres_bgn_arr[pump_data.pump_on_arr_idx];
-    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/2)){ //otherwise calculation probably give too errorneous result
+    pres_bgn_abs=pump_data.pres_bgn_arr[idx]+ADC_1BAR;
+//    int p_dif=curr_pres_abs-pres_bgn_abs;
+//!!!    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/2)){ //otherwise calculation probably give too errorneous result
         if(working_time>1000){//magic number! 1sec. If working time too small for some reason division by near zerro occure 
-            pres_bgn=pump_data.pres_bgn_arr[idx];
-            water_in_tk=(float)(pump_data.tk_gross_vol*pump_data.tk_air_pres*(curr_pres-pres_bgn))/(float)(curr_pres*pres_bgn);
+            water_in_tk=(float)(pump_data.tk_gross_vol*(pump_data.tk_air_pres+ADC_1BAR)*(curr_pres_abs-pres_bgn_abs))/(float)(curr_pres_abs*pres_bgn_abs);
             float cap_curr=((float)LITRES_PER_PULSE+water_in_tk)*1000/working_time;//*1000 - because of time in milliseconds
             pump_data.pump_capacity=cap_curr;
         }
-    }
+//    }
     //calculate avarage capacity  
     uint32_t consum;
     working_time=0;  
@@ -210,9 +211,9 @@ static void CalcPumpCapacity(int32_t curr_pres){
     }
     idx=pump_data.pump_on_arr_idx;
     if(++idx>=PP_CAPACITY_AVRG_NUM)idx=0;//try to find oldest cell
-    pres_bgn=pump_data.pres_bgn_arr[idx];
+    pres_bgn_abs=pump_data.pres_bgn_arr[idx]+ADC_1BAR;
     consum=LITRES_PER_PULSE*PP_CAPACITY_AVRG_NUM;
-    water_in_tk=(float)(pump_data.tk_gross_vol*pump_data.tk_air_pres*(curr_pres-pres_bgn))/(float)(curr_pres*pres_bgn);
+    water_in_tk=(float)(pump_data.tk_gross_vol*(pump_data.tk_air_pres+ADC_1BAR)*(curr_pres_abs-pres_bgn_abs))/(float)(curr_pres_abs*pres_bgn_abs);
     float cap_avg=((float)consum+water_in_tk)*1000/working_time;//*1000 - because of time in milliseconds
 //!!!    if((ABSi(pump_data.pump_capacity_avg-cap_avg))>0.05)//to avoid to often renew 
         StoreVal("cap_avg",(*(int32_t*)&cap_avg));
@@ -221,11 +222,13 @@ static void CalcPumpCapacity(int32_t curr_pres){
 
 static void CalcWaterTkNetVolume(int32_t curr_pres){
     float tk_vol;
+    int32_t curr_pres_abs=curr_pres+ADC_1BAR;
     if(pump_data.pump_capacity_avg==0)return;//we first time switch on. not ready for calculation
-    int p_dif=curr_pres-pump_data.pres_bgn_arr[pump_data.pump_on_arr_idx];
-    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/2))return; //we can't do anything, leave previously calculated value otherwise error will be too high
-    tk_vol=((float)pump_data.pres_max-pump_data.pres_min)/((float)pump_data.pres_max *pump_data.pres_min);
-    tk_vol*=(float)(curr_pres*(pump_data.pres_bgn_arr[pump_data.pump_on_arr_idx]))/(float)p_dif;
+    int32_t pres_bgn_abs=pump_data.pres_bgn_arr[pump_data.pump_on_arr_idx]+ADC_1BAR;
+    int p_dif=curr_pres_abs-pres_bgn_abs;
+    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/8))return; //we can't do anything, leave previously calculated value otherwise error will be too high
+    tk_vol=((float)pump_data.pres_max-pump_data.pres_min)/((float)(pump_data.pres_max+ADC_1BAR) *(pump_data.pres_min+ADC_1BAR));
+    tk_vol*=(float)(curr_pres_abs*pres_bgn_abs)/(float)p_dif;
     tk_vol*=(float)(pump_data.pump_on_arr[pump_data.pump_on_arr_idx]*pump_data.pump_capacity_avg)/1000.0-LITRES_PER_PULSE;
     pump_data.tank_volume=tk_vol;
 }
