@@ -12,8 +12,7 @@
 #define PP_MAX_FREQUINT_RESTART 3  //refer to maximum allowed number of too frequent restart pump before disconnect power and rase alarm
 #define LITRES_PER_PULSE 10
 
-static void CalcPumpCapacity(int32_t curr_pres);
-static void CalcWaterTkNetVolume(int32_t curr_pres);
+static void CalcPumpCapacity(float curr_tk_air_vol);
 enum {OFF,ON};
 static void PumpAlarmShutdown(uint8_t on1_off0);
 static void PumpPressostatOnOff(uint8_t on1_off0);
@@ -28,15 +27,17 @@ static void RestoreVals(void);
             }while(0)
 #define ABSi(x) (x<0 ? -x : x)
 
+/// @brief 
 typedef struct {
     uint32_t acc_counter; //consumed water counter, in liters
     float pump_capacity;  //pump capacity in liters per minute
     float pump_capacity_avg;  //pump capacity in liters per minute averaged for last PP_CAPACITY_AVRG_NUM pulses
-    float tank_volume;    //water accumulator tank (hydrophore) net (useful) volume. Water stored between pump on and off pressures
     uint32_t alarm_fgs;   //bitwise alarm flags
+    float last_volume_at_WFpulse;//value of air volume in expansion tank at the moment of flow counter pulse
+    int16_t pp_touts[4];//some timers concerning pump working, in form of 0.01 secunds. Order of values are in 'touts_arr_en'
 
     uint32_t pump_on_arr[PP_CAPACITY_AVRG_NUM];//array of last 'PP_CAPACITY_AVRG_NUM' accumulated working on-time of pump from one to next flow-counter pulse
-    int32_t pres_bgn_arr[PP_CAPACITY_AVRG_NUM];//array of instant pressure value at moment of flow-counter pulse.
+    float vol_bgn_arr[PP_CAPACITY_AVRG_NUM];//array of instant pressure value at moment of flow-counter pulse.
     uint8_t pump_on_arr_idx;//pump_on_acc_arr[] index
     //for avoid unintendant stop pump due to accidental contact bounce frequent restart has some filtering procedure
     uint8_t freq_start_cnt;//counter of consiquent frequent restart of pump before disconnect pump, every frequent start increase by 2, every any pump star decrement
@@ -55,10 +56,9 @@ tPumpData_st pump_data = {
     .acc_counter=123, 
     .pump_capacity=0,
     .pump_capacity_avg=0,
-    .tank_volume=3.05,
     .alarm_fgs=0,
     .pump_on_arr={0},
-    .pres_bgn_arr={0},
+    .vol_bgn_arr={0},
     .pump_on_arr_idx=0,
     .freq_start_cnt=0,
 //    .pres_p=-1,
@@ -81,6 +81,7 @@ void loop_task(void* arg) {
     int32_t last_press_val=-1;
     main_loop_events = xEventGroupCreate();
     DisplayInit(main_loop_events);
+    DigInSetTankData(pump_data.tk_gross_vol,pump_data.tk_air_pres);
     DigInInit(main_loop_events);
     RestoreVals();
     DisplaySetCounter(pump_data.acc_counter);
@@ -94,7 +95,7 @@ void loop_task(void* arg) {
         if((current_tick-start_tick)>=tout){//time to transmit (publish) new message
             start_tick=current_tick;
             tout=pdMS_TO_TICKS(3000)+(esp_random() & 0x1f)-0x0f;//randomize timeout to avoid collision?
-            LED_toggle();
+            int msg_length=4;
             switch (msg_rrobin) {
                 case 0:
                     msg_opcode = WATER_PUMP_OP_STATUS_COUNTER;
@@ -106,19 +107,24 @@ void loop_task(void* arg) {
                     break;
                 case 2:
                     msg_opcode = WATER_PUMP_OP_STATUS_TK_VOL;
-                    msg_p = (uint8_t*)&(pump_data.tank_volume);
+                    msg_p = (uint8_t*)&(pump_data.last_volume_at_WFpulse);
                     break;
                 case 3:
+                    msg_opcode = WATER_PUMP_OP_STATUS_ALARM;
+                    msg_p = (uint8_t*)&(pump_data.alarm_fgs);                    
+                    break;
+                case 4:
+                    msg_opcode = WATER_PUMP_OP_STATUS_PP_TIMEOUTS;
+                    msg_length=8;
+                    msg_p = (uint8_t*)&(pump_data.pp_touts);
+                    break;
+                default: //case 5
                     msg_opcode = WATER_PUMP_OP_STATUS_CAP_AVG;
                     msg_p = (uint8_t*)&(pump_data.pump_capacity_avg);
                     break;
-                default: //case 4
-                    msg_opcode = WATER_PUMP_OP_STATUS_ALARM;
-                    msg_p = (uint8_t*)&(pump_data.alarm_fgs);
-                    break;
             }
-            if(++msg_rrobin>4)msg_rrobin=0;
-            vendor_publish_message(msg_opcode,msg_p,4);
+            if(++msg_rrobin>5)msg_rrobin=0;
+            vendor_publish_message(msg_opcode,msg_p,msg_length);
         }else{//END if(...>=tout)... If we here means we waked by event, next tout must be recalculated
            tout-=(current_tick-start_tick);
            start_tick=current_tick;
@@ -127,21 +133,25 @@ void loop_task(void* arg) {
         //******events from hardware inputs block**********************
         if (event_bits & EVENT_NEW_COUNT) {
             uint32_t idx=pump_data.pump_on_arr_idx;
+            pump_data.last_volume_at_WFpulse=volume_at_WFpulse;
             pump_data.acc_counter += LITRES_PER_PULSE;
             pump_data.pump_on_arr[idx]=pump_last_run_time_ms;
+            pump_data.pp_touts[PP_ON_ACC]=pump_last_run_time_ms/10;            
+            pump_data.pp_touts[PP_RUN_MAX]=time_pp_on_max/10;
+            pump_data.pp_touts[PP_RUN_MIN]=time_pp_on_min/10;
+            if(!time_from_start_at_WFpulse) pump_data.pp_touts[PP_RUN_AT_PULSE]=0;
+            else {
+                uint16_t t;
+                t=time_from_start_at_WFpulse/10;
+                if(!t)t=1;
+                pump_data.pp_touts[PP_RUN_AT_PULSE]=t;
+            }
             // calculate capacity here
-            CalcPumpCapacity(press_val_at_cnt_pulse);
-            CalcWaterTkNetVolume(press_val_at_cnt_pulse);
-int kkk=idx;
-int ttt=0;
-for(int j=0;j<PP_CAPACITY_AVRG_NUM;j++)ttt+=pump_data.pump_on_arr[j];
-if (++ kkk >= PP_CAPACITY_AVRG_NUM) kkk = 0;
-ESP_LOGI("PULSE","%d,%.3f,%.3f,%.3f,%d,%d,",pump_data.acc_counter,pump_data.pump_capacity,pump_data.pump_capacity_avg,pump_data.tank_volume,pump_data.pump_on_arr[idx],ttt);
-ESP_LOGI("PULSE","%d,%d,%d,%d,%d,%.3f\r\n\r\n",pump_data.pres_bgn_arr[kkk],press_val_at_cnt_pulse,(int)pump_data.pump_on_arr_idx,pump_data.pres_max,pump_data.pres_min,flow_acc_last);
+            CalcPumpCapacity(volume_at_WFpulse);
             //prepare next cycle
             if (++ idx >= PP_CAPACITY_AVRG_NUM) idx = 0;
             pump_data.pump_on_arr_idx=idx;
-            pump_data.pres_bgn_arr[idx]=press_val_at_cnt_pulse;
+            pump_data.vol_bgn_arr[idx]=volume_at_WFpulse;
             DisplaySetCounter(pump_data.acc_counter);
             StoreVal("counter",(*(int32_t*)&pump_data.acc_counter));
         }
@@ -154,7 +164,7 @@ ESP_LOGI("PULSE","%d,%d,%d,%d,%d,%.3f\r\n\r\n",pump_data.pres_bgn_arr[kkk],press
             pump_data.pres_min=last_press_val;
         }
         if(event_bits & EVENT_PUMP_RUN_LONG){
-            PumpAlarmShutdown(OFF);
+            PumpAlarmShutdown(1);
             pump_data.alarm_fgs|=WP_ALARM_PUMP_LONG_RUN;
         }
         if(event_bits & EVENT_PUMP_TOO_FREQ){
@@ -162,7 +172,7 @@ ESP_LOGI("PULSE","%d,%d,%d,%d,%d,%.3f\r\n\r\n",pump_data.pres_bgn_arr[kkk],press
             pump_data.freq_start_cnt+=2;
             if(pump_data.freq_start_cnt>PP_MAX_FREQUINT_RESTART){
                 pump_data.alarm_fgs|=WP_ALARM_FREQUENT_START_HIGH;
-                PumpAlarmShutdown(OFF);
+                PumpAlarmShutdown(1);
             }
         }
         if(event_bits & EVENT_NEW_PRESSURE_VAL){
@@ -183,55 +193,36 @@ ESP_LOGI("PULSE","%d,%d,%d,%d,%d,%.3f\r\n\r\n",pump_data.pres_bgn_arr[kkk],press
 }
 
 
-static void CalcPumpCapacity(int32_t curr_pres){
+static void CalcPumpCapacity(float curr_tk_air_vol){
     uint32_t idx;
     uint32_t working_time=0;
-    int32_t pres_bgn_abs;
-    int32_t curr_pres_abs=curr_pres+ADC_1BAR;
+    float vol_bgn;
     idx=pump_data.pump_on_arr_idx;
-    if(pump_data.pres_bgn_arr[idx]==0)return;//this is first entrence, there is no enough data
-    float water_in_tk;//difference of water, stored in tank at this moment and at the begining of averaging period
+    if(pump_data.vol_bgn_arr[idx]==0)return;//this is first entrence, there is no enough data
     //calculate capacitance for last 'LITRES_PER_PULSE' liters (for last pulse)
     working_time=pump_data.pump_on_arr[idx];
-    pres_bgn_abs=pump_data.pres_bgn_arr[idx]+ADC_1BAR;
-//    int p_dif=curr_pres_abs-pres_bgn_abs;
-//!!!    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/2)){ //otherwise calculation probably give too errorneous result
-        if(working_time>1000){//magic number! 1sec. If working time too small for some reason division by near zerro occure 
-            water_in_tk=(float)(pump_data.tk_gross_vol*(pump_data.tk_air_pres+ADC_1BAR)*(curr_pres_abs-pres_bgn_abs))/(float)(curr_pres_abs*pres_bgn_abs);
-            float cap_curr=((float)LITRES_PER_PULSE+water_in_tk)*1000/working_time;//*1000 - because of time in milliseconds
-            pump_data.pump_capacity=cap_curr;
-        }
-//    }
+    vol_bgn=pump_data.vol_bgn_arr[idx];
+    if(working_time>1000){//magic number! 1sec. If working time too small for some reason division by near zerro occure 
+        float cap_curr=(LITRES_PER_PULSE+vol_bgn-curr_tk_air_vol)*1000/working_time;//*1000 - because of time in milliseconds
+        pump_data.pump_capacity=cap_curr;
+    }
     //calculate avarage capacity  
     uint32_t consum;
     working_time=0;  
     for(int i=0;i<PP_CAPACITY_AVRG_NUM;i++){
-        if(pump_data.pres_bgn_arr[i]==0)return;//at begining array not fully filled
+        if(pump_data.vol_bgn_arr[i]==0)return;//at begining array not fully filled
         working_time+=pump_data.pump_on_arr[i];        
     }
     idx=pump_data.pump_on_arr_idx;
     if(++idx>=PP_CAPACITY_AVRG_NUM)idx=0;//try to find oldest cell
-    pres_bgn_abs=pump_data.pres_bgn_arr[idx]+ADC_1BAR;
+    vol_bgn=pump_data.vol_bgn_arr[idx];
     consum=LITRES_PER_PULSE*PP_CAPACITY_AVRG_NUM;
-    water_in_tk=(float)(pump_data.tk_gross_vol*(pump_data.tk_air_pres+ADC_1BAR)*(curr_pres_abs-pres_bgn_abs))/(float)(curr_pres_abs*pres_bgn_abs);
-    float cap_avg=((float)consum+water_in_tk)*1000/working_time;//*1000 - because of time in milliseconds
-//!!!    if((ABSi(pump_data.pump_capacity_avg-cap_avg))>0.05)//to avoid to often renew 
+    float cap_avg=(consum+vol_bgn-curr_tk_air_vol)*1000/working_time;//*1000 - because of time in milliseconds
+    if((ABSi(pump_data.pump_capacity_avg-cap_avg))>0.01)//to avoid to often renew 
         StoreVal("cap_avg",(*(int32_t*)&cap_avg));
     pump_data.pump_capacity_avg=cap_avg;
 }
 
-static void CalcWaterTkNetVolume(int32_t curr_pres){
-    float tk_vol;
-    int32_t curr_pres_abs=curr_pres+ADC_1BAR;
-    if(pump_data.pump_capacity_avg==0)return;//we first time switch on. not ready for calculation
-    int32_t pres_bgn_abs=pump_data.pres_bgn_arr[pump_data.pump_on_arr_idx]+ADC_1BAR;
-    int p_dif=curr_pres_abs-pres_bgn_abs;
-    if(ABSi(p_dif)<((pump_data.pres_max-pump_data.pres_min)/8))return; //we can't do anything, leave previously calculated value otherwise error will be too high
-    tk_vol=((float)pump_data.pres_max-pump_data.pres_min)/((float)(pump_data.pres_max+ADC_1BAR) *(pump_data.pres_min+ADC_1BAR));
-    tk_vol*=(float)(curr_pres_abs*pres_bgn_abs)/(float)p_dif;
-    tk_vol*=(float)(pump_data.pump_on_arr[pump_data.pump_on_arr_idx]*pump_data.pump_capacity_avg)/1000.0-LITRES_PER_PULSE;
-    pump_data.tank_volume=tk_vol;
-}
 static void PumpAlarmShutdown(uint8_t set1_res0){
     if(set1_res0){
         pump_data.shutdown_fg=1;
@@ -292,7 +283,8 @@ int32_t WPSetParameter(WP_param_id id, int32_t val){
             StoreVal("counter",(*(int32_t*)&pump_data.acc_counter));
             break;
         case WP_PARAM_I_ALARMS:
-            pump_data.alarm_fgs=0;//only reset have sence
+            pump_data.alarm_fgs=*(uint32_t*)&val;//actualy only reset have sence
+            PumpAlarmShutdown(0);
             res=pump_data.alarm_fgs;
             break;
         case WP_PARAM_I_PRESS_MAX_STOP:

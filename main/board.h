@@ -39,15 +39,21 @@ uint32_t IsPumpRun(void);
 void board_init(void);
 
 void DigInInit(EventGroupHandle_t events);
+void DigInSetTankData(uint16_t vol,int32_t pres);
 uint32_t IsBypassSwitchOn(void);
+uint8_t IsButtonPressed(void);
+
 #define MAX_PUMP_RUN_TIME_MNT   2
 #define MAX_PUMP_RUN_TIME_MS   (MAX_PUMP_RUN_TIME_MNT*60*1000)
 #define MIN_PUMP_STOPPED_TIME_SEC 10
 #define MIN_PUMP_STOPPED_TIME_MS (MIN_PUMP_STOPPED_TIME_SEC*1000)
-volatile extern uint32_t pump_last_run_time_ms;
-volatile int32_t press_val_at_cnt_pulse;
 
-volatile float flow_acc_last;
+volatile extern uint32_t pump_last_run_time_ms;
+volatile extern float volume_at_WFpulse;
+volatile extern TickType_t time_from_start_at_WFpulse;
+volatile extern TickType_t time_pp_on_max;
+volatile extern TickType_t time_pp_on_min;
+
 /* Pressure transmitter measuring range*/
 #define PRES_TRANS_RANGE_bar  6.0   
 #define ADC_REF_VOLT          2.048 //check adc PGA settings
@@ -61,5 +67,4 @@ volatile float flow_acc_last;
 #define Pressure2ADCcode(pr)  (int32_t)(PRES_ADC_MAX_CODE*((pr)/PRES_TRANS_RANGE_bar))
 #define ADCcode2Pressure(cd)  (PRES_TRANS_RANGE_bar*((float)(cd))/PRES_ADC_MAX_CODE)
 #define ADC_1BAR (int32_t)(PRES_ADC_MAX_CODE*(1.0/PRES_TRANS_RANGE_bar))
-uint8_t IsButtonPressed(void);
 #endif

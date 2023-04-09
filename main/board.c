@@ -13,6 +13,7 @@
 #include "board.h"
 #include "loop.h"
 #include "display_adc.h"
+#include <math.h>
 // #include "iot_button.h"
 
 
@@ -74,32 +75,34 @@ typedef struct{
     uint32_t pump_off_timer;//pump not working time from last stop, for frequent restart check,in timer granuality
     uint8_t pump_run_fg;
     TickType_t pump_on_acc;//accumulated timer of working time from last flow-counter pulse
-    TickType_t pump_last_start;//time of last start of pump
+    TickType_t pump_last_start_2acc;//time of last start of pump, used for accumulation of working time from one flowcounter pulse to another. It is reseted at every pulse
+    TickType_t pump_last_start_pure;//time of last start of pump, used to measures longest and shortest pump working time
+    TickType_t time_pp_on_max;
+    TickType_t time_pp_on_min;
 }tDigIn_st;
 static tDigIn_st dig_ins={
     .counter_in_states=0xff,
     .pump_power_in_states=0xff,
     .pump_on_acc=0,
+    .time_pp_on_max=0,
+    .time_pp_on_min=portMAX_DELAY,
 };
 //because it must be enough long time between flow-counter pulses 
 //it is not required to protectect 'pump_last_run_time_ms' and 'press_val_at_cnt_pulse' by any interprocess sharing facilities 
 //AND read/write 32bit value supposed to be atomic  
 volatile uint32_t pump_last_run_time_ms=0; //pump working time sinse last flow-counter pulse, used for share
-volatile int32_t press_val_at_cnt_pulse=0; //pressure value captured at flow-counter pulse
-static uint8_t relay_onoff_cmd=PP_REL_OFF;
+volatile float volume_at_WFpulse=0;
+volatile TickType_t time_from_start_at_WFpulse=0;
+volatile TickType_t time_pp_on_max;
+volatile TickType_t time_pp_on_min;
 
-#define PP_MAXFLOW_PER_TICK (55.0/60.0/configTICK_RATE_HZ)
-#define PP_MAX_HEAD 5.0
-#define PP_MAXHEAD_AD Pressure2ADCcode(PP_MAX_HEAD)
-// MAXFLOW-MAXFLOW/MAXHEAD^2*pr^2  --->   55-(55/5^2)*PR^2
-#define PP_FlowPerTick(pr) (PP_MAXFLOW_PER_TICK-((PP_MAXFLOW_PER_TICK)/(float)(PP_MAXHEAD_AD*PP_MAXHEAD_AD))*pr*pr)
-volatile float flow_acc_last=0;
-volatile float flow_acc=0;
-volatile TickType_t flow_acc_last_time=0;
-int32_t pump_is_on=0;
+
+static uint8_t relay_onoff_cmd=PP_REL_OFF;
+static int32_t pump_is_on=0;
 
 void DigInLoop(void* tmr) ;
 static void RelaySwitchFSM(void);
+float TankVolumeCalculation(int32_t pres);
 static EventGroupHandle_t input_events;
 //**********************************************************************************
 void DigInInit(EventGroupHandle_t events){
@@ -127,26 +130,29 @@ void DigInInit(EventGroupHandle_t events){
     dig_ins.pump_off_timer=0xffffffff;
 }
 void DigInLoop(void* tmr) {
+    float vol;
     RelaySwitchFSM();
+    vol=TankVolumeCalculation(ADCGetResult());
     dig_ins.counter_in_states = (dig_ins.counter_in_states << 1) | gpio_get_level(COUNTER_IN_PIN);
     dig_ins.pump_power_in_states = (dig_ins.pump_power_in_states << 1) | gpio_get_level(PUMP_POWER_IN_PIN);
     button_state = (button_state << 1) | gpio_get_level(BOARD_BUTTON_PIN);
     if((button_state&0x07)==0x04)button_was_pressed=1;
     if ((dig_ins.counter_in_states & 0x07) == 0x03) {  // rising front of next '10 liters' pulse
-        if(relay_onoff_cmd==PP_REL_ON){
-           dig_ins.pump_on_acc+=xTaskGetTickCount()-dig_ins.pump_last_start;
+        if(pump_is_on/*relay_onoff_cmd==PP_REL_ON*/){
+           dig_ins.pump_on_acc+=xTaskGetTickCount()-dig_ins.pump_last_start_2acc;
+           time_from_start_at_WFpulse=pdTICKS_TO_MS(xTaskGetTickCount()-dig_ins.pump_last_start_pure);
+           if(!time_from_start_at_WFpulse)time_from_start_at_WFpulse=1;
+        }else{
+            time_from_start_at_WFpulse=0;
         }
-        dig_ins.pump_last_start=xTaskGetTickCount();//even if it is in OFF noting wrong will happen
-        pump_last_run_time_ms=pdTICKS_TO_MS(dig_ins.pump_on_acc);
-        press_val_at_cnt_pulse=ADCGetResult();
+        dig_ins.pump_last_start_2acc=xTaskGetTickCount();//even if it is in OFF noting wrong will happen
+        pump_last_run_time_ms=pdTICKS_TO_MS(dig_ins.pump_on_acc);        
         dig_ins.pump_on_acc=0;
-
-
-        if(pump_is_on)flow_acc+=PP_FlowPerTick(ADCGetResult())*(xTaskGetTickCount()-flow_acc_last_time);
-        flow_acc_last=flow_acc;
-        flow_acc=0;
-        flow_acc_last_time=xTaskGetTickCount();
-
+        volume_at_WFpulse=vol;
+        time_pp_on_max=pdTICKS_TO_MS(dig_ins.time_pp_on_max);
+        time_pp_on_min=pdTICKS_TO_MS(dig_ins.time_pp_on_min);
+        dig_ins.time_pp_on_max=0;
+        dig_ins.time_pp_on_min=portMAX_DELAY;
         xEventGroupSetBits(input_events, EVENT_NEW_COUNT);
     }
     uint8_t p_st=dig_ins.pump_power_in_states & 0x07;//take last 3 input states
@@ -191,8 +197,6 @@ void PumpRelay(uint8_t onoff){
 static void RelaySwitchFSM(void){
     static pump_relay_state_en state = REL_OFF;
     static TickType_t tout;
-    if(pump_is_on)flow_acc+=PP_FlowPerTick(ADCGetResult())*(xTaskGetTickCount()-flow_acc_last_time);
-    flow_acc_last_time=xTaskGetTickCount();
     switch (state) {
         case REL_OFF:
             if (relay_onoff_cmd == PP_REL_OFF) {
@@ -205,7 +209,7 @@ static void RelaySwitchFSM(void){
         case REL_TRIAC_CLS_ON:
             gpio_set_level(PUMP_TRIAC_OUT_PIN, 0);
             pump_is_on=1;
-            dig_ins.pump_last_start=xTaskGetTickCount();
+            dig_ins.pump_last_start_pure=dig_ins.pump_last_start_2acc=xTaskGetTickCount();
             if ((xTaskGetTickCount()-tout)>RELAYSWITCHMARGINE){
                 state = REL_RELAY_CLS_ON;
                 tout = xTaskGetTickCount();
@@ -233,18 +237,91 @@ static void RelaySwitchFSM(void){
                 tout = xTaskGetTickCount();
             }
             break;
-        case REL_RELAY_OPN_OFF:
+        case REL_RELAY_OPN_OFF:{
             gpio_set_level(PUMP_RELAY_OUT_PIN, 0);
-            if ((xTaskGetTickCount()-tout)>RELAYSWITCHMARGINE){
+            TickType_t tmp=xTaskGetTickCount();
+            if ((tmp-tout)>RELAYSWITCHMARGINE){
                 state = REL_OFF;
                 gpio_set_level(PUMP_TRIAC_OUT_PIN, 1);
                 pump_is_on=0;
-                dig_ins.pump_on_acc+=xTaskGetTickCount()-dig_ins.pump_last_start;
+                dig_ins.pump_on_acc+=tmp-dig_ins.pump_last_start_2acc;
             }
-            break;
+            tmp=tmp-dig_ins.pump_last_start_pure;//now tmp store pp working time
+            if(tmp>dig_ins.time_pp_on_max)dig_ins.time_pp_on_max=tmp;
+            if(tmp<dig_ins.time_pp_on_min)dig_ins.time_pp_on_min=tmp;
+            break;}
         default:
             tout = xTaskGetTickCount();
             state = REL_TRIAC_OPN_ON;
             break;
     }
+}
+
+//**********************************************************************************
+#define TEMPR_AMBIENT_DFLT 10.0 //!!!it is default
+#define Tmpr_calc_heat_time pdMS_TO_TICKS(20*1000) //!!!it is selected at development!
+#define gamma 1.4
+static uint16_t tk_gross_vol=24;
+static int32_t tk_air_pres=Pressure2ADCcode(1.5);
+float SwingRemover(int32_t pres,float v_calc_i);
+//*******
+void DigInSetTankData(uint16_t vol,int32_t pres){
+    tk_gross_vol=vol;
+    tk_air_pres=pres;
+}
+//*******
+float TankVolumeCalculation(int32_t pres){
+    float v_calc_i;
+    static float v_calc_i_p;
+    static TickType_t t_p=0;
+    float Tmpr_calc_i;
+    static float Tmpr_calc_i_p=TEMPR_AMBIENT_DFLT;
+    static float p_calc_p=-2;
+    TickType_t t_cur;
+    double rel_p;
+    t_cur=xTaskGetTickCount();
+    Tmpr_calc_i=Tmpr_calc_i_p;
+    Tmpr_calc_i+=(TEMPR_AMBIENT_DFLT-Tmpr_calc_i_p)*(t_cur-t_p)/(float)Tmpr_calc_heat_time;
+    t_p=t_cur;
+    if(p_calc_p<0){
+        if(p_calc_p<-1){//make shure to have first real adc data
+            p_calc_p=-0.5;
+            return 24.0;
+        }
+        t_p=xTaskGetTickCount();
+        p_calc_p=pres;
+        v_calc_i_p=tk_gross_vol*(float)(tk_air_pres+ADC_1BAR)/(float)(pres+ADC_1BAR);
+    }
+    p_calc_p=(p_calc_p+ADC_1BAR)*(Tmpr_calc_i+273)/(float)(Tmpr_calc_i_p+273)-ADC_1BAR;
+    Tmpr_calc_i_p=Tmpr_calc_i;
+
+    rel_p=(float)(p_calc_p+ADC_1BAR)/(float)(pres+ADC_1BAR);
+    v_calc_i=v_calc_i_p*pow(rel_p,(double)(1/gamma));
+    Tmpr_calc_i=(Tmpr_calc_i_p+273)*pow(rel_p,(double)(1-gamma)/gamma)-273;       
+    p_calc_p=pres;
+//    v_calc_i_p=v_calc_i;
+    v_calc_i_p=SwingRemover(pres,v_calc_i);
+    Tmpr_calc_i_p=Tmpr_calc_i;
+    return v_calc_i;
+}
+//if calculated volume for limited calculation precition will swing to any direction this function
+// allow to return it to resanoble values
+float SwingRemover(int32_t pres,float v_calc_i){
+    static int32_t ref_pres=0;
+    static TickType_t tout=0;
+    static uint8_t stepped_fg=0;
+    float res=v_calc_i;
+    if(abs(pres-ref_pres)<Pressure2ADCcode(0.05)){//presure stabilized
+        if(!stepped_fg && (xTaskGetTickCount()-tout)>(Tmpr_calc_heat_time*5)){//stabilized for enough time
+            float v_indep;
+            v_indep=(tk_air_pres+ADC_1BAR)*tk_gross_vol/(float)(pres+ADC_1BAR);
+            res=(v_indep-v_calc_i)/10+v_calc_i;//10 - magic number of allowed gradient
+            stepped_fg=1;//only 1 time allowed per pressure stabilized
+        }         
+    }else{
+        ref_pres=pres;
+        tout=xTaskGetTickCount();
+        stepped_fg=0;
+    }
+    return res;
 }

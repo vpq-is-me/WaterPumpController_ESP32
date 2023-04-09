@@ -40,12 +40,12 @@
 
 #define CREATE_GROUP_ADDR(add) ((uint16_t)0xc000 | add)
 #define GROUP_SEPTIC CREATE_GROUP_ADDR(10)
-//#define GROUP_DOORBELL CREATE_GROUP_ADDR(11)
+#define GROUP_DOORBELL CREATE_GROUP_ADDR(11)
 #define GROUP_WATERPUMP CREATE_GROUP_ADDR(12)
 
 //#define ESP_BLE_MESH_VND_MODEL_ID_CLIENT 0x0000
 #define WATER_PUMP_MODEL_ID_SERVER 0x0001
-
+#define SEPTIC_MODEL_ID_SERVER    0x0002
 
 static uint8_t dev_uuid[ESP_BLE_MESH_OCTET16_LEN] = {0x32, 0x10};
 static esp_ble_mesh_cfg_srv_t config_server = {
@@ -75,20 +75,33 @@ static esp_ble_mesh_model_t root_models[] = {
 static esp_ble_mesh_model_op_t vnd_op[] = {
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_SET_PARAM, 5),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_GET_PARAM, 1),
-    ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_PARAM, 5),
+    ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_PARAM, 5), //because I don't know how preoperly make 2 model I set min_length to min from all
 
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_COUNTER, 4),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_CAPACITY, 4),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_TK_VOL, 4),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_ALARM, 4),
+    ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_PP_TIMEOUTS, 8),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_CAP_AVG, 4),
     ESP_BLE_MESH_MODEL_OP_END,
 };
+
+// static esp_ble_mesh_model_op_t vnd_septic_op[] = {
+//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_SET, 2),
+//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_GET, 1),
+//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_ALARM_STATUS, 1),
+//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_PEND_ALARM_STATUS, 1),
+//     ESP_BLE_MESH_MODEL_OP_END,
+// };
+
+
 
 ESP_BLE_MESH_MODEL_PUB_DEFINE(vnd_pub, (3 + MAX_MSG_LENGTH), ROLE_NODE);  // MAX_MSG_LENGTH + length(op_code)
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, WATER_PUMP_MODEL_ID_SERVER,
                               vnd_op, &vnd_pub, NULL),
+    // ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, SEPTIC_MODEL_ID_SERVER,
+    //                           vnd_septic_op, &vnd_pub, NULL),
 };
 
 // Call this function after provision completed!Even after bind key
@@ -240,6 +253,7 @@ static void ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
             ESP_LOGI(TAG, "Send 0x%06x", param->model_send_comp.opcode);
             break;
         case ESP_BLE_MESH_MODEL_PUBLISH_COMP_EVT:
+            LED_toggle();
 //            ESP_LOGI(TAG, "Complete publish message with result err=%d", param->model_publish_comp.err_code);
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
@@ -251,15 +265,6 @@ static void ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
     }
 }
 void vendor_publish_message(uint32_t op_code, uint8_t*data, uint16_t length) {
-    // static uint8_t init_done = 0;
-    // struct net_buf_simple *msg = vnd_models[0].pub->msg;
-    // if (!init_done) {
-    //     if (msg != NULL && vnd_models[0].pub->publish_addr != ESP_BLE_MESH_ADDR_UNASSIGNED) {
-    //         bt_mesh_model_msg_init(msg, WATER_PAMP_OP_STATUS_COUNTER);
-    //         init_done = 1;
-    //     } else
-    //         ESP_LOGE(TAG, "can't init model messager");
-    // }
     esp_ble_mesh_model_publish(&vnd_models[0], op_code, length, data, ROLE_NODE);
 }
 static esp_err_t ble_mesh_init(void) {
@@ -281,7 +286,7 @@ static esp_err_t ble_mesh_init(void) {
         return err;
     }
 
-    bt_mesh_set_device_name("Home_automation");
+    bt_mesh_set_device_name("Home/Water PP");
     ESP_LOGI(TAG, "BLE Mesh Node initialized");
     set_publish();
     return ESP_OK;
