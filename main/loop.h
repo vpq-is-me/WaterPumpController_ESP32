@@ -15,8 +15,8 @@
 void loop_task(void* arg);
 
 
-#define WP_ALARM_TANK_VOLUME_LOW        (0x0001ul << 0)
-#define WP_ALARM_TANK_VOLUME_LOW_LOW    (0x0001ul << 1)
+//#define WP_ALARM_TANK_VOLUME_LOW        (0x0001ul << 0)
+//#define WP_ALARM_TANK_VOLUME_LOW_LOW    (0x0001ul << 1)
 #define WP_ALARM_CHECKVALVE_LEAK        (0x0001ul << 2)
 #define WP_ALARM_PUMP_CAPACITY_LOW      (0x0001ul << 3)
 #define WP_ALARM_PUMP_CAPACITY_LOW_LOW  (0x0001ul << 4)
@@ -25,6 +25,7 @@ void loop_task(void* arg);
 #define WP_ALARM_FREQUENT_START         (0x0001ul << 7)
 #define WP_ALARM_FREQUENT_START_HIGH    (0x0001ul << 8)
 #define WP_ALARM_SEPTIC_REQ_SDWN        (0x0001ul << 9)
+#define WP_ALARM_SEPTIC_NOT_SEND        (0x0001ul << 10)
 
 #define EVENT_NEW_COUNT        (0x01<<0)
 #define EVENT_PUMP_START       (0x01<<1)
@@ -45,5 +46,6 @@ typedef enum tWP_param_i_en{WP_PARAM_I_COUNTER,
 int32_t WPGetParameter(WP_param_id id);
 
 int32_t WPSetParameter(WP_param_id id, int32_t val);
+void WPSetSepticState(uint8_t dat);
 
 #endif

@@ -75,7 +75,7 @@ static esp_ble_mesh_model_t root_models[] = {
 static esp_ble_mesh_model_op_t vnd_op[] = {
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_SET_PARAM, 5),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_GET_PARAM, 1),
-    ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_PARAM, 5), //because I don't know how preoperly make 2 model I set min_length to min from all
+    ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_PARAM, 5), 
 
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_COUNTER, 4),
     ESP_BLE_MESH_MODEL_OP(WATER_PUMP_OP_STATUS_CAPACITY, 4),
@@ -86,13 +86,22 @@ static esp_ble_mesh_model_op_t vnd_op[] = {
     ESP_BLE_MESH_MODEL_OP_END,
 };
 
-// static esp_ble_mesh_model_op_t vnd_septic_op[] = {
-//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_SET, 2),
-//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_GET, 1),
-//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_ALARM_STATUS, 1),
-//     ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_PEND_ALARM_STATUS, 1),
-//     ESP_BLE_MESH_MODEL_OP_END,
-// };
+static const esp_ble_mesh_client_op_pair_t septic_vnd_op_pair[] = {
+    { SEPTIC_OP_GET, SEPTIC_OP_ALARM_STATUS },
+    { SEPTIC_OP_GET, SEPTIC_OP_PEND_ALARM_STATUS },
+};
+
+static esp_ble_mesh_client_t septic_client = {
+    .op_pair_size = ARRAY_SIZE(septic_vnd_op_pair),
+    .op_pair = septic_vnd_op_pair,
+};
+static esp_ble_mesh_model_op_t vnd_septic_op[] = {
+//    ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_SET, 2),
+    ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_GET, 1),
+    ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_ALARM_STATUS, 1),
+    ESP_BLE_MESH_MODEL_OP(SEPTIC_OP_PEND_ALARM_STATUS, 1),
+    ESP_BLE_MESH_MODEL_OP_END,
+};
 
 
 
@@ -100,8 +109,8 @@ ESP_BLE_MESH_MODEL_PUB_DEFINE(vnd_pub, (3 + MAX_MSG_LENGTH), ROLE_NODE);  // MAX
 static esp_ble_mesh_model_t vnd_models[] = {
     ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, WATER_PUMP_MODEL_ID_SERVER,
                               vnd_op, &vnd_pub, NULL),
-    // ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, SEPTIC_MODEL_ID_SERVER,
-    //                           vnd_septic_op, &vnd_pub, NULL),
+    ESP_BLE_MESH_VENDOR_MODEL(CID_ESP, SEPTIC_MODEL_ID_SERVER,
+                              vnd_septic_op, &vnd_pub, &septic_client),
 };
 
 // Call this function after provision completed!Even after bind key
@@ -109,9 +118,14 @@ void set_publish(void) {
     vnd_pub.retransmit = ESP_BLE_MESH_PUBLISH_TRANSMIT(PUBLISH_RETRANSMIT_COUNT, PUBLISH_RETRANSMIT_PERIOD);
     vnd_pub.ttl = 0x07;
     vnd_pub.publish_addr = GROUP_WATERPUMP;
-    esp_ble_mesh_model_subscribe_group_addr(vnd_models[0].element->element_addr,
-                                            vnd_models[0].vnd.company_id,
-                                            vnd_models[0].vnd.model_id,
+//    Note. If you subscribed one time it will be remembered in storage, so explicitly unsubscribe!
+    // esp_ble_mesh_model_unsubscribe_group_addr(vnd_models[0].element->element_addr,
+    //                                           vnd_models[0].vnd.company_id,
+    //                                           vnd_models[0].vnd.model_id,
+    //                                           GROUP_SEPTIC);
+    esp_ble_mesh_model_subscribe_group_addr(vnd_models[1].element->element_addr,
+                                            vnd_models[1].vnd.company_id,
+                                            vnd_models[1].vnd.model_id,
                                             GROUP_SEPTIC);
     //if you subscribe on your publish address you will receive you own group messages in ESP_BLE_MESH_MODEL_OPERATION_EVT
     //Or filter this messages or don't subscribe
@@ -257,7 +271,16 @@ static void ble_mesh_custom_model_cb(esp_ble_mesh_model_cb_event_t event,
 //            ESP_LOGI(TAG, "Complete publish message with result err=%d", param->model_publish_comp.err_code);
             break;
         case ESP_BLE_MESH_CLIENT_MODEL_RECV_PUBLISH_MSG_EVT:
-            ESP_LOGI(TAG, "receive client publish message");
+            ESP_LOGI(TAG,"We receive publish message length=%d",param->client_recv_publish_msg.length);
+            ESP_LOGI(TAG,"opcode: 0x%06x; src_addr: 0x%04x, dst_addr: 0x%04x",param->client_recv_publish_msg.opcode,
+                                                                              param->client_recv_publish_msg.ctx->addr,
+                                                                              param->client_recv_publish_msg.ctx->recv_dst);
+            if(param->client_recv_publish_msg.ctx->recv_dst==GROUP_SEPTIC){
+                if(param->client_recv_publish_msg.opcode==SEPTIC_OP_PEND_ALARM_STATUS){
+                    uint8_t msg_data=*param->client_recv_publish_msg.msg;
+                    WPSetSepticState(msg_data);
+                }
+            }
             break;
         default:
             ESP_LOGI(TAG, "Unproccessed event in model CB event: %d", event);
@@ -280,6 +303,12 @@ static esp_err_t ble_mesh_init(void) {
         return err;
     }
 
+    err = esp_ble_mesh_client_model_init(&vnd_models[1]);
+    if (err) {
+        ESP_LOGE(TAG, "Failed to initialize vendor client");
+        return err;
+    }
+
     err = esp_ble_mesh_node_prov_enable(ESP_BLE_MESH_PROV_ADV | ESP_BLE_MESH_PROV_GATT);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable mesh node");
@@ -287,6 +316,9 @@ static esp_err_t ble_mesh_init(void) {
     }
 
     bt_mesh_set_device_name("Home/Water PP");
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT,ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,ESP_PWR_LVL_P9);
     ESP_LOGI(TAG, "BLE Mesh Node initialized");
     set_publish();
     return ESP_OK;

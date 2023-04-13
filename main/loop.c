@@ -57,6 +57,7 @@ tPumpData_st pump_data = {
     .pump_capacity=0,
     .pump_capacity_avg=0,
     .alarm_fgs=0,
+    .pp_touts[0]=0,//for signaling about first measure
     .pump_on_arr={0},
     .vol_bgn_arr={0},
     .pump_on_arr_idx=0,
@@ -70,6 +71,10 @@ tPumpData_st pump_data = {
     .tk_gross_vol=24,//tank volume
     .shutdown_fg=0,
     };
+static uint32_t septic_state=0;
+static TickType_t septic_update_time=0;
+//allow some time for not receiving data from septic to diside
+#define SEPTIC_SILENCE_TIMEOUT pdMS_TO_TICKS(5*60*1000)
 
 void loop_task(void* arg) {
     uint8_t msg_rrobin = 0;//round robin counter for publishing info
@@ -125,6 +130,10 @@ void loop_task(void* arg) {
             }
             if(++msg_rrobin>5)msg_rrobin=0;
             vendor_publish_message(msg_opcode,msg_p,msg_length);
+            if(septic_state) pump_data.alarm_fgs|=WP_ALARM_SEPTIC_REQ_SDWN;
+            else pump_data.alarm_fgs&=~WP_ALARM_SEPTIC_REQ_SDWN; 
+            if((current_tick-septic_update_time)>SEPTIC_SILENCE_TIMEOUT)pump_data.alarm_fgs|=WP_ALARM_SEPTIC_NOT_SEND;
+            else pump_data.alarm_fgs&=~WP_ALARM_SEPTIC_NOT_SEND;
         }else{//END if(...>=tout)... If we here means we waked by event, next tout must be recalculated
            tout-=(current_tick-start_tick);
            start_tick=current_tick;
@@ -136,7 +145,10 @@ void loop_task(void* arg) {
             pump_data.last_volume_at_WFpulse=volume_at_WFpulse;
             pump_data.acc_counter += LITRES_PER_PULSE;
             pump_data.pump_on_arr[idx]=pump_last_run_time_ms;
-            pump_data.pp_touts[PP_ON_ACC]=pump_last_run_time_ms/10;            
+            //to indicate that this is first measirement and timers can be not truth we use negative value
+            int16_t pp_on=pump_last_run_time_ms/10;
+            if(pump_data.pp_touts[PP_ON_ACC]==0)pump_data.pp_touts[PP_ON_ACC]=-pp_on;
+            else pump_data.pp_touts[PP_ON_ACC]=pp_on;            
             pump_data.pp_touts[PP_RUN_MAX]=time_pp_on_max/10;
             pump_data.pp_touts[PP_RUN_MIN]=time_pp_on_min/10;
             if(!time_from_start_at_WFpulse) pump_data.pp_touts[PP_RUN_AT_PULSE]=0;
@@ -327,4 +339,7 @@ static void RestoreVals(void){
     }
     nvs_close(mem_handle); 
 }
-
+void WPSetSepticState(uint8_t dat){
+    septic_state=dat;
+    septic_update_time=xTaskGetTickCount();
+}
