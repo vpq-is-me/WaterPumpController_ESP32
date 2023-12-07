@@ -27,6 +27,8 @@ void loop_task(void* arg);
 #define WP_ALARM_SEPTIC_REQ_SDWN        (0x0001ul << 9)
 #define WP_ALARM_SEPTIC_NOT_SEND        (0x0001ul << 10)
 
+#define WP_ALARM_SHUTDOWN_MASK (WP_ALARM_PUMP_LONG_RUN | WP_ALARM_FREQUENT_START_HIGH | WP_ALARM_SEPTIC_REQ_SDWN)
+
 #define EVENT_NEW_COUNT        (0x01<<0)
 #define EVENT_PUMP_START       (0x01<<1)
 #define EVENT_PUMP_STOP        (0x01<<2)

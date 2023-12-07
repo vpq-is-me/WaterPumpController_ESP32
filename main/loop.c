@@ -130,8 +130,16 @@ void loop_task(void* arg) {
             }
             if(++msg_rrobin>5)msg_rrobin=0;
             vendor_publish_message(msg_opcode,msg_p,msg_length);
-            if(septic_state) pump_data.alarm_fgs|=WP_ALARM_SEPTIC_REQ_SDWN;
-            else pump_data.alarm_fgs&=~WP_ALARM_SEPTIC_REQ_SDWN; 
+            if(septic_state){
+                int changed=(pump_data.alarm_fgs & WP_ALARM_SEPTIC_REQ_SDWN)?0:1;                
+                pump_data.alarm_fgs|=WP_ALARM_SEPTIC_REQ_SDWN;
+                if(changed)PumpAlarmShutdown(1);
+            }
+            else {
+                int changed=(pump_data.alarm_fgs & WP_ALARM_SEPTIC_REQ_SDWN)?1:0;
+                pump_data.alarm_fgs&=~WP_ALARM_SEPTIC_REQ_SDWN; 
+                if(changed)PumpAlarmShutdown(0);
+            }
             if((current_tick-septic_update_time)>SEPTIC_SILENCE_TIMEOUT)pump_data.alarm_fgs|=WP_ALARM_SEPTIC_NOT_SEND;
             else pump_data.alarm_fgs&=~WP_ALARM_SEPTIC_NOT_SEND;
         }else{//END if(...>=tout)... If we here means we waked by event, next tout must be recalculated
@@ -176,8 +184,8 @@ void loop_task(void* arg) {
             pump_data.pres_min=last_press_val;
         }
         if(event_bits & EVENT_PUMP_RUN_LONG){
-            PumpAlarmShutdown(1);
             pump_data.alarm_fgs|=WP_ALARM_PUMP_LONG_RUN;
+            PumpAlarmShutdown(1);
         }
         if(event_bits & EVENT_PUMP_TOO_FREQ){
             pump_data.alarm_fgs|=WP_ALARM_FREQUENT_START;
@@ -238,8 +246,8 @@ static void CalcPumpCapacity(float curr_tk_air_vol){
 static void PumpAlarmShutdown(uint8_t set1_res0){
     if(set1_res0){
         pump_data.shutdown_fg=1;
-        PumpRelay(PP_REL_OFF);;
-    }else 
+        PumpRelay(PP_REL_OFF);
+    }else if(!(pump_data.alarm_fgs & WP_ALARM_SHUTDOWN_MASK))//only if every strict alarms are off
         pump_data.shutdown_fg=0;
 }
 static void PumpPressostatOnOff(uint8_t on1_off0){
