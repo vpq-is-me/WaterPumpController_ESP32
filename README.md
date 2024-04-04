@@ -16,7 +16,9 @@ Also it stops water feeding in case of some failure:
    - pump capacity dropping 
 
 ###Entire system overview
-![Alt text](hardware/WPoverview.png?raw=true)
+
+![Alt text](hardware/WPoverview.jpg?raw=true)
+
 ###Controller circuit diagram
 ![Alt text](hardware/circuit.png?raw=true)
 
