@@ -1,4 +1,4 @@
-#Water pump controller.
+# Water pump controller.
 
 This controller intended for control submersible pump installed in water well. It turn on pump when pressure in hydraulic accumulator (HA) dropped to lower pressure P1 and switch off when pressure rich high predefined pressure P2. Pressure measured by pressure transducer with range 0-6bar and output 4-20mA. 
 For diagnostic reason there is water flow counter with pulse output - 1 pulse per 10litres (dry contact). 
@@ -15,10 +15,10 @@ Also it stops water feeding in case of some failure:
    - pump failure
    - pump capacity dropping 
 
-###Entire system overview
+### Entire system overview
 
 ![Alt text](hardware/WPoverview.jpg?raw=true)
 
-###Controller circuit diagram
+### Controller circuit diagram
 ![Alt text](hardware/circuit.png?raw=true)
 
